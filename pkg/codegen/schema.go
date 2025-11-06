@@ -809,7 +809,7 @@ func GenStructFromSchema(schema Schema) string {
 	// Start out with struct {
 	objectParts := []string{"struct {"}
 	// Append all the field definitions
-	objectParts = append(objectParts, GenFieldsFromProperties(schema.Properties)...)
+	objectParts = append(objectParts, GenFieldsFromPropertiesWithValidation(schema.Properties)...)
 	// Close the struct
 	if schema.HasAdditionalProperties {
 		objectParts = append(objectParts,
@@ -927,4 +927,186 @@ func setSkipOptionalPointerForContainerType(outSchema *Schema) {
 	}
 
 	outSchema.SkipOptionalPointer = true
+}
+
+func buildValidationTag(p Property) string {
+	var validations []string
+	
+	if p.Required {
+		validations = append(validations, "required")
+	}
+	
+	if p.Schema.OAPISchema != nil {
+		schema := p.Schema.OAPISchema
+		
+		if schema.Type.Is("string") {
+			if schema.MinLength > 0 {
+				validations = append(validations, fmt.Sprintf("min=%d", schema.MinLength))
+			}
+			if schema.MaxLength != nil && *schema.MaxLength > 0 {
+				validations = append(validations, fmt.Sprintf("max=%d", *schema.MaxLength))
+			}
+			
+			switch schema.Format {
+			case "email":
+				validations = append(validations, "email")
+			case "uuid":
+				validations = append(validations, "uuid")
+			case "uri":
+				validations = append(validations, "uri")
+			case "date":
+				validations = append(validations, "datetime=2006-01-02")
+			case "date-time":
+				validations = append(validations, "datetime=2006-01-02T15:04:05Z07:00")
+			}
+			
+			if schema.Pattern != "" {
+				pattern := strings.ReplaceAll(schema.Pattern, ",", "\\,")
+				validations = append(validations, fmt.Sprintf("regexp=%s", pattern))
+			}
+		}
+		
+		if schema.Type.Is("integer") || schema.Type.Is("number") {
+			if schema.Min != nil {
+				if schema.ExclusiveMin {
+					validations = append(validations, fmt.Sprintf("gt=%v", *schema.Min))
+				} else {
+					validations = append(validations, fmt.Sprintf("gte=%v", *schema.Min))
+				}
+			}
+			if schema.Max != nil {
+				if schema.ExclusiveMax {
+					validations = append(validations, fmt.Sprintf("lt=%v", *schema.Max))
+				} else {
+					validations = append(validations, fmt.Sprintf("lte=%v", *schema.Max))
+				}
+			}
+		}
+		
+		if schema.Type.Is("array") {
+			if schema.MinItems > 0 {
+				validations = append(validations, fmt.Sprintf("min=%d", schema.MinItems))
+			}
+			if schema.MaxItems != nil && *schema.MaxItems > 0 {
+				validations = append(validations, fmt.Sprintf("max=%d", *schema.MaxItems))
+			}
+		}
+		
+		if len(schema.Enum) > 0 {
+			enumValues := make([]string, len(schema.Enum))
+			for i, v := range schema.Enum {
+				enumValues[i] = fmt.Sprintf("%v", v)
+			}
+			validations = append(validations, fmt.Sprintf("oneof=%s", strings.Join(enumValues, " ")))
+		}
+	}
+	
+	if len(validations) == 0 {
+		return ""
+	}
+	
+	return strings.Join(validations, ",")
+}
+
+func GenFieldsFromPropertiesWithValidation(props []Property) []string {
+	var fields []string
+	for i, p := range props {
+		field := ""
+
+		goFieldName := p.GoFieldName()
+
+		if p.Description != "" {
+			if i != 0 {
+				field += "\n"
+			}
+			field += fmt.Sprintf("%s\n", StringWithTypeNameToGoComment(p.Description, p.GoFieldName()))
+		}
+
+		if p.Deprecated {
+			var deprecationReason string
+			if extension, ok := p.Extensions[extDeprecationReason]; ok {
+				if extDeprecationReason, err := extParseDeprecationReason(extension); err == nil {
+					deprecationReason = extDeprecationReason
+				}
+			}
+			field += fmt.Sprintf("%s\n", DeprecationComment(deprecationReason))
+		}
+
+		if extension, ok := p.Extensions[extPropGoTypeSkipOptionalPointer]; ok {
+			if skipOptionalPointer, err := extParsePropGoTypeSkipOptionalPointer(extension); err == nil {
+				p.Schema.SkipOptionalPointer = skipOptionalPointer
+			}
+		}
+
+		field += fmt.Sprintf("    %s %s", goFieldName, p.GoTypeDef())
+
+		shouldOmitEmpty := (!p.Required || p.ReadOnly || p.WriteOnly) &&
+			(!p.Required || !p.ReadOnly || !globalState.options.Compatibility.DisableRequiredReadOnlyAsPointer)
+
+		omitEmpty := !p.Nullable && shouldOmitEmpty
+		omitZero := false
+
+		if p.Nullable && globalState.options.OutputOptions.NullableType {
+			omitEmpty = shouldOmitEmpty
+		}
+
+		if shouldOmitEmpty && p.Schema.SkipOptionalPointer && globalState.options.OutputOptions.PreferSkipOptionalPointerWithOmitzero {
+			omitZero = true
+		}
+
+		if extOmitEmptyValue, ok := p.Extensions[extPropOmitEmpty]; ok {
+			if xValue, err := extParseOmitEmpty(extOmitEmptyValue); err == nil {
+				omitEmpty = xValue
+			}
+		}
+
+		if extOmitEmptyValue, ok := p.Extensions[extPropOmitZero]; ok {
+			if xValue, err := extParseOmitZero(extOmitEmptyValue); err == nil {
+				omitZero = xValue
+			}
+		}
+
+		fieldTags := make(map[string]string)
+
+		fieldTags["json"] = p.JsonFieldName +
+			stringOrEmpty(omitEmpty, ",omitempty") +
+			stringOrEmpty(omitZero, ",omitzero")
+
+		if globalState.options.OutputOptions.EnableYamlTags {
+			fieldTags["yaml"] = p.JsonFieldName + stringOrEmpty(omitEmpty, ",omitempty")
+		}
+		if p.NeedsFormTag {
+			fieldTags["form"] = p.JsonFieldName + stringOrEmpty(omitEmpty, ",omitempty")
+		}
+
+		if globalState.options.OutputOptions.EnableValidateTags {
+			if validateTag := buildValidationTag(p); validateTag != "" {
+				fieldTags["validate"] = validateTag
+			}
+		}
+
+		if extension, ok := p.Extensions[extPropGoJsonIgnore]; ok {
+			if goJsonIgnore, err := extParseGoJsonIgnore(extension); err == nil && goJsonIgnore {
+				fieldTags["json"] = "-"
+			}
+		}
+
+		if extension, ok := p.Extensions[extPropExtraTags]; ok {
+			if tags, err := extExtraTags(extension); err == nil {
+				keys := SortedMapKeys(tags)
+				for _, k := range keys {
+					fieldTags[k] = tags[k]
+				}
+			}
+		}
+
+		keys := SortedMapKeys(fieldTags)
+		tags := make([]string, len(keys))
+		for i, k := range keys {
+			tags[i] = fmt.Sprintf(`%s:"%s"`, k, fieldTags[k])
+		}
+		field += "`" + strings.Join(tags, " ") + "`"
+		fields = append(fields, field)
+	}
+	return fields
 }
