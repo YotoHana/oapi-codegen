@@ -164,7 +164,7 @@
         },
         "validate-tags": {
           "type": "boolean",
-          "description": "Go playground validation tags",
+          "description": "Go playground validation tags"
         },
         "exclude-schemas": {
           "type": "array",
