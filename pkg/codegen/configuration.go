@@ -242,6 +242,7 @@ func (co CompatibilityOptions) Validate() map[string]string {
 
 // OutputOptions are used to modify the output code in some way.
 type OutputOptions struct {
+	EnableValidateTags bool `yaml:"validate-tags,omitempty"`
 	// Whether to skip go imports on the generated code
 	SkipFmt bool `yaml:"skip-fmt,omitempty"`
 	// Whether to skip pruning unused components on the generated code

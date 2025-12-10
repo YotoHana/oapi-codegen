@@ -162,6 +162,10 @@
             "type": "string"
           }
         },
+        "validate-tags": {
+          "type": "boolean",
+          "description": "Go playground validation tags"
+        },
         "exclude-schemas": {
           "type": "array",
           "description": "Exclude from generation schemas with given names. Ignored when empty.",
