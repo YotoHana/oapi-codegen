@@ -990,6 +990,9 @@ func buildValidationTag(p Property) string {
 			if schema.MaxItems != nil && *schema.MaxItems > 0 {
 				validations = append(validations, fmt.Sprintf("max=%d", *schema.MaxItems))
 			}
+			
+			// Всегда добавляем dive для массивов
+			validations = append(validations, "dive")
 		}
 		
 		if len(schema.Enum) > 0 {
