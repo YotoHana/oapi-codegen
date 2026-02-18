@@ -934,6 +934,8 @@ func buildValidationTag(p Property) string {
 	
 	if p.Required {
 		validations = append(validations, "required")
+	} else {
+		validations = append(validations, "omitempty")
 	}
 	
 	if p.Schema.OAPISchema != nil {
@@ -991,7 +993,6 @@ func buildValidationTag(p Property) string {
 				validations = append(validations, fmt.Sprintf("max=%d", *schema.MaxItems))
 			}
 			
-			// Всегда добавляем dive для массивов
 			validations = append(validations, "dive")
 		}
 		
@@ -1004,7 +1005,7 @@ func buildValidationTag(p Property) string {
 		}
 	}
 	
-	if len(validations) == 0 {
+	if len(validations) == 1 && validations[0] == "omitempty" {
 		return ""
 	}
 	
